@@ -1,11 +1,10 @@
-from flask import Flask, Blueprint, request, send_from_directory, session, jsonify, make_response
+from flask import Flask, Blueprint, request, send_from_directory, jsonify, session
 from flask_session import Session
 from flask_sqlalchemy import SQLAlchemy
 from youtube_dl import YoutubeDL
 from threading import Thread
 from urllib.parse import urlparse, parse_qs
 from datetime import datetime
-import shutil
 from time import time, sleep
 import os
 import subprocess
@@ -22,10 +21,6 @@ app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///site.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 db = SQLAlchemy(app)
 
-os.makedirs('yt-progress', exist_ok=True)
-os.makedirs('downloads', exist_ok=True)
-download_dir = 'downloads'
-
 
 # This function runs in a separate thread.
 def delete_downloads():
@@ -34,19 +29,8 @@ def delete_downloads():
         sleep(600)
         for file in os.listdir('downloads'):
             os.remove(os.path.join('downloads', file))
-
-
-# This class is a table in the database.
-class User(db.Model): 
-    id = db.Column(db.Integer, primary_key=True)
-    ip = db.Column(db.String(20), unique=True, nullable=False)
-    times_used_yt_downloader = db.Column(db.Integer, default=0)
-    mb_downloaded = db.Column(db.Float, default=0)
-
-    def __init__(self, ip, times_used_yt_downloader, mb_downloaded):
-        self.ip = ip
-        self.times_used_yt_downloader = times_used_yt_downloader
-        self.mb_downloaded = mb_downloaded
+        for file in os.listdir('yt-progress'):
+            os.remove(file)
 
 
 def update_database():
@@ -125,8 +109,9 @@ def send_json_response(progress_file_path, video_id, download_type):
 
     return jsonify(download_path=os.path.join('downloads', new_filename), 
                     log_file=progress_file_path)
- 
-        
+
+
+# This value for the 'logger' key in the youtube-dl options dictionaries will be set to this class.        
 class Logger():
     def debug(self, msg):
         with open(session['progress_file_path'], 'a') as f:
@@ -136,16 +121,24 @@ class Logger():
     def error(self, msg):
         pass
 
-# youtube-dl options template dictionary.
-options = {
-    # Prevent "'latin-1' codec can't encode characters in position 18-23: ordinal not in range(256)" error.
-    'restrictfilenames': True,
-    # Set the value of the logger key to the logger class created above.
-    'logger': Logger()
-}
+
+# This class is a table in the database.
+class User(db.Model): 
+    id = db.Column(db.Integer, primary_key=True)
+    ip = db.Column(db.String(20), unique=True, nullable=False)
+    times_used_yt_downloader = db.Column(db.Integer, default=0)
+    mb_downloaded = db.Column(db.Float, default=0)
+
+    def __init__(self, ip, times_used_yt_downloader, mb_downloaded):
+        self.ip = ip
+        self.times_used_yt_downloader = times_used_yt_downloader
+        self.mb_downloaded = mb_downloaded
 
 # Initialization
 db.create_all()
+os.makedirs('yt-progress', exist_ok=True)
+os.makedirs('downloads', exist_ok=True)
+download_dir = 'downloads'
 downloads_today = 0
 is_downloading = False
 delete_downloads_thread = Thread(target=delete_downloads)
@@ -172,32 +165,45 @@ def yt_downloader():
     video_link = request.form['link']
     video_id = video_link.split('=')[1] if get_video_id(video_link) is None else get_video_id(video_link)
 
-    # Video [best]   
+    # Video (best quality)   
     if request.form['button_clicked'] == 'Video [best]':
+
         log.info(f'{video_link} | Video')
-        options['format'] = 'bestvideo+bestaudio/best'
-        options['outtmpl'] = f'{download_dir}/%(title)s-%(id)s-[video].%(ext)s'
+        options = {
+            'format': 'bestvideo+bestaudio/best',
+            'outtmpl': f'{download_dir}/%(title)s-%(id)s-[video].%(ext)s',
+            'restrictfilenames': True,
+            'logger': Logger()
+        }
         run_youtube_dl([video_link], options)
         return send_json_response(session['progress_file_path'], video_id, '-[video]')
        
-    # Video [MP4]
+    # MP4
     elif request.form['button_clicked'] == 'Video [MP4]':
 
         log.info(f'{video_link} | MP4')
-        options['format'] = 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
-        options['outtmpl'] = f'{download_dir}/%(title)s-%(id)s-[MP4].%(ext)s'
+        options = {
+            'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            'outtmpl': f'{download_dir}/%(title)s-%(id)s-[MP4].%(ext)s',
+            'restrictfilenames': True,
+            'logger': Logger()
+        }
         run_youtube_dl([video_link], options)
         return send_json_response(session['progress_file_path'], video_id, '-[MP4]')
 
-    # Audio [best]
+    # Audio (best quality)
     elif request.form['button_clicked'] == 'Audio [best]':
 
         log.info(f'{video_link} | Audio')
-        options['format'] = 'bestaudio'
-        options['outtmpl'] = f'{download_dir}/%(title)s-%(id)s-[audio].%(ext)s'
-        options['postprocessors'] = [{
-            'key': 'FFmpegExtractAudio'
-        }]
+        options = {
+            'format': 'bestaudio',
+            'outtmpl': f'{download_dir}/%(title)s-%(id)s-[audio].%(ext)s',
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio'
+            }],
+            'restrictfilenames': True,
+            'logger': Logger()
+        }
         run_youtube_dl([video_link], options)
         return send_json_response(session['progress_file_path'], video_id, '-[audio]')
      
@@ -205,20 +211,22 @@ def yt_downloader():
     elif request.form['button_clicked'] == 'MP3':
 
         log.info(f'{video_link} | MP3')
-        options['format'] = 'bestaudio'
-        options['audioformat'] = 'mp3'
-        options['outtmpl'] = f'{download_dir}/%(title)s-%(id)s-[MP3].%(ext)s'
-        options['writethumbnail'] = True
-        options['postprocessors'] = [
-            {
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'mp3',
-                'preferredquality': '0' # -q:a 0
-            },
-            {
-                'key': 'EmbedThumbnail'
-            }
-        ]
+        options = {
+            'format': 'bestaudio/best',
+            'outtmpl': f'{download_dir}/%(title)s-%(id)s-[MP3].%(ext)s',
+            'postprocessors': [
+                {
+                    'key': 'FFmpegExtractAudio',
+                    'preferredcodec': 'mp3',
+                    'preferredquality': '0' # -q:a 0
+                },
+                {
+                    'key': 'EmbedThumbnail'
+                }
+            ],
+            'restrictfilenames': True,
+            'logger': Logger()
+        }
         run_youtube_dl([video_link], options)
         return send_json_response(session['progress_file_path'], video_id, '-[MP3]')
 
